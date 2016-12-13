@@ -1,0 +1,111 @@
+### Input to function:
+
+# y should be a vector of a continuous outcome
+# xmatrix should be a matrix of covariates of interest
+    # can be high-dimensional but min(N-1,p) predictors will be chosen by this algorithm
+# alpha indicates step size towards least squares coefficient
+    # with high-dimensional data might want to consider tradeoff between accuracy and computing time
+# maxiter determines how many times the coefficients of the final set of covariates will be updated
+# LASSO=TRUE implements the Lasso modification
+    # note that this only works if coefficients cross zero while creating the final set of active covariates
+    # once the function enters the final step, this does not apply
+    # future work aims to fix this in order to fully implement the Lasso modification 
+
+LAR <- function(y, xmatrix, alpha = 0.0001, maxiter=1e5, LASSO=FALSE){
+  start <- proc.time()
+  
+  #initialize parameters 
+  meanx <- colMeans(xmatrix)
+  xmatrix <- scale(xmatrix, meanx, FALSE)	# center & scale x
+  stop <- min(nrow(xmatrix) - 1, ncol(xmatrix))
+  y <- y - mean(y) #centered outcome
+  r <- y #set residual = outcome
+  drop<- NULL #to collect variables dropped in LASSO
+  
+  #find largest correlation
+  corr <- cor(xmatrix, r) #find all correlations
+  active <- idx0 <- which(corr == max(corr)) #predictor index for max correlation with residual
+  x.a <- xmatrix[,idx0] #active set
+  r.k <- r
+  
+  #### LARS W/O LASSO
+  if(LASSO==FALSE){
+    beta <- matrix(0, nrow = stop + 1, ncol = ncol(xmatrix)) #initialize beta coefficients = 0 
+    # Steps 2 - (k-1), k = # predictors
+    for(i in 2:(stop)){
+      beta[i,active] <- beta[i-1,active] #set current beta = previous beta
+      while(max(abs(cor(xmatrix[,active],r.k))) > max(abs(cor(xmatrix[,-active],r.k)))){
+        x.a<-as.matrix(xmatrix[,active])
+        delta <- solve(t(x.a) %*% x.a) %*% t(x.a) %*% r.k #least squares coefficient
+        beta[i,active] <- beta[i,active] + alpha * delta
+        r.k <- y - x.a %*% beta[i,active] #updating residual
+      }
+      active<-c(active, which.max((abs(cor(xmatrix, r.k)))))
+    }
+    
+    ## Step k (last predictor)
+    iter <- 0
+    beta[stop+1,active]<-beta[stop,active]
+    while(iter < maxiter){
+      x.a<-xmatrix[,active]
+      delta <- solve(t(x.a) %*% x.a) %*% t(x.a) %*% r.k #least squares coefficient
+      beta[stop+1,active] <- beta[stop+1,active] + alpha * delta
+      r.k <- y - x.a %*% beta[stop+1,active] #updating residual
+      iter <- iter + 1
+    }
+  }
+
+  ### LARS W LASSO
+  if(LASSO==TRUE){
+    beta<-matrix(0, nrow=1, ncol=ncol(xmatrix)) #initialize beta coefficients = 0
+    steps<-1
+    ## should only go to N predictors
+    while(length(active)<stop){
+      beta<-rbind(beta, beta[steps,]) #set current beta = previous beta
+      while(max(abs(cor(xmatrix[,active],r.k))) > max(abs(cor(xmatrix[,-active],r.k)))){
+        xmat<-xmatrix
+        #look at what the updated coefficients would be
+        x.temp<-as.matrix(xmat[,active])
+        delta.temp <- solve(t(x.temp) %*% x.temp) %*% t(x.temp) %*% r.k #least squares coefficient
+        prev.step<-beta[steps+1,active]
+        next.step <- beta[steps+1,active] + alpha * delta.temp
+        #search for a covariate crossing zero
+        for(j in 1:length(active)){
+          if((sign(prev.step[j])!= 0) && (sign(prev.step[j]) != sign(next.step[j]))) {
+            #remove it from the active step
+            active<-active[-j]
+            #remove it from consideration within the xmatrix
+            xmat<-xmat[,-j]
+            #turn the beta estimate back to zero
+            beta[steps+1,j]<-0
+            #take note that this was dropped for the time being
+            drop<- c(drop, active[j])
+          }
+        }
+        #moving on to actually complete the step
+        x.a<-as.matrix(xmat[,active])
+        delta <- solve(t(x.a) %*% x.a) %*% t(x.a) %*% r.k #least squares coefficient
+        beta[steps+1,active] <- beta[steps+1,active] + alpha * delta 
+        r.k <- y - x.a %*% beta[steps+1,active] #updating residual
+      }
+      active<-c(active, which.max((abs(cor(xmatrix, r.k)))))
+      steps<-steps+1
+    }
+    
+    ## issue with lasso is happening in this last step, where a variable may cross zero but we cannot return to the previous loop
+    ## Step k (last predictor)
+    iter2 <- 0
+    beta<-rbind(beta, beta[steps,]) #set current beta = previous beta
+    while(iter2 < maxiter){
+      x.a<-xmatrix[,active]
+      delta <- solve(t(x.a) %*% x.a) %*% t(x.a) %*% r.k #least squares coefficient
+      beta[steps+1,active] <- beta[steps+1,active] + alpha * delta
+      r.k <- y - x.a %*% beta[steps+1,active] #updating residual
+      iter2 <- iter2 + 1
+    }
+    
+
+  }
+  time <- proc.time() - start
+  return(list(beta = beta, time = time, drop=drop))
+}
